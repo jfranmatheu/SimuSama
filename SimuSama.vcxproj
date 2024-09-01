@@ -118,7 +118,7 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>C:\Users\JF\AppData\Local\Programs\Python\Python311\include;C:\Users\JF\source\repos\SimuSama\extern\pybind11\include;C:\includes\eigen-3.4.0;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Users\JF\source\repos\SimuSama\packages\inteltbb.devel.win.2021.13.1.11\build\native\include;C:\Users\JF\source\repos\SimuSama\packages\tbb.4.2.3.1\build\native\include;C:\Users\JF\AppData\Local\Programs\Python\Python311\include;C:\Users\JF\source\repos\SimuSama\extern\pybind11\include;C:\includes\eigen-3.4.0;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <OpenMPSupport>true</OpenMPSupport>
     </ClCompile>
     <Link>
@@ -126,18 +126,31 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>C:\Users\JF\AppData\Local\Programs\Python\Python311\libs;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>python311.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>C:\Users\JF\AppData\Local\Programs\Python\Python311\libs;C:\Users\JF\source\repos\SimuSama\packages\tbb.4.2.3.1\build\native\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>tbb.lib;python311.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="MPMBindings.cpp" />
-    <ClCompile Include="MPMSimulation.cpp" />
+    <ClCompile Include="eigen_example.cpp" />
+    <ClCompile Include="minimal_example.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="MPMSimulation.h" />
+    <None Include="packages.config" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
+    <Import Project="packages\tbb.redist.4.2.3.1\build\native\tbb.redist.targets" Condition="Exists('packages\tbb.redist.4.2.3.1\build\native\tbb.redist.targets')" />
+    <Import Project="packages\tbb.4.2.3.1\build\native\tbb.targets" Condition="Exists('packages\tbb.4.2.3.1\build\native\tbb.targets')" />
+    <Import Project="packages\inteltbb.redist.win.2021.13.1.11\build\native\inteltbb.redist.win.targets" Condition="Exists('packages\inteltbb.redist.win.2021.13.1.11\build\native\inteltbb.redist.win.targets')" />
+    <Import Project="packages\inteltbb.devel.win.2021.13.1.11\build\native\inteltbb.devel.win.targets" Condition="Exists('packages\inteltbb.devel.win.2021.13.1.11\build\native\inteltbb.devel.win.targets')" />
   </ImportGroup>
+  <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
+    <PropertyGroup>
+      <ErrorText>This project references NuGet package(s) that are missing on this computer. Use NuGet Package Restore to download them.  For more information, see http://go.microsoft.com/fwlink/?LinkID=322105. The missing file is {0}.</ErrorText>
+    </PropertyGroup>
+    <Error Condition="!Exists('packages\tbb.redist.4.2.3.1\build\native\tbb.redist.targets')" Text="$([System.String]::Format('$(ErrorText)', 'packages\tbb.redist.4.2.3.1\build\native\tbb.redist.targets'))" />
+    <Error Condition="!Exists('packages\tbb.4.2.3.1\build\native\tbb.targets')" Text="$([System.String]::Format('$(ErrorText)', 'packages\tbb.4.2.3.1\build\native\tbb.targets'))" />
+    <Error Condition="!Exists('packages\inteltbb.redist.win.2021.13.1.11\build\native\inteltbb.redist.win.targets')" Text="$([System.String]::Format('$(ErrorText)', 'packages\inteltbb.redist.win.2021.13.1.11\build\native\inteltbb.redist.win.targets'))" />
+    <Error Condition="!Exists('packages\inteltbb.devel.win.2021.13.1.11\build\native\inteltbb.devel.win.targets')" Text="$([System.String]::Format('$(ErrorText)', 'packages\inteltbb.devel.win.2021.13.1.11\build\native\inteltbb.devel.win.targets'))" />
+  </Target>
 </Project>

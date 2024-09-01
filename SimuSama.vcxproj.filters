@@ -15,16 +15,14 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="MPMSimulation.cpp">
+    <ClCompile Include="minimal_example.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="MPMBindings.cpp">
+    <ClCompile Include="eigen_example.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="MPMSimulation.h">
-      <Filter>Source Files</Filter>
-    </ClInclude>
+    <None Include="packages.config" />
   </ItemGroup>
 </Project>
