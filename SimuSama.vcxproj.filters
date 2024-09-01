@@ -15,10 +15,10 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="main.cpp">
+    <ClCompile Include="MPMSimulation.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="MPMSimulation.cpp">
+    <ClCompile Include="MPMBindings.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
