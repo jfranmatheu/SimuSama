@@ -1,44 +1,37 @@
+// MPMBindings.cpp
 #include <pybind11/pybind11.h>
-#include <pybind11/eigen.h>
 #include <pybind11/stl.h>
+#include <pybind11/numpy.h>
 #include "MPMSimulation.h"
 
 namespace py = pybind11;
 
 PYBIND11_MODULE(mpm_simulation, m) {
-    py::class_<Grid>(m, "Grid")
-        .def(py::init<const Eigen::Vector3i&, float>())
-        .def_readonly("dimensions", &Grid::dimensions)
-        .def_readonly("cell_size", &Grid::cellSize);
-
-    py::enum_<MaterialType>(m, "MaterialType")
-        .value("ELASTIC", MaterialType::Elastic)
-        .value("SNOW", MaterialType::Snow)
-        .value("FLUID", MaterialType::Fluid);
-
-    py::class_<Material>(m, "Material")
-        .def(py::init<MaterialType, float, float, float, float, float>())
-        .def_readonly("type", &Material::type)
-        .def_readonly("youngs_modulus", &Material::youngsModulus)
-        .def_readonly("poisson_ratio", &Material::poissonRatio)
-        .def_readonly("critical_compression", &Material::criticalCompression)
-        .def_readonly("critical_stretch", &Material::criticalStretch)
-        .def_readonly("density", &Material::density);
-
     py::class_<Particle>(m, "Particle")
-        .def(py::init<const Eigen::Vector3f&, float, const Material*>())
-        .def_readonly("position", &Particle::position)
-        .def_readonly("velocity", &Particle::velocity)
-        .def_readonly("mass", &Particle::mass)
-        .def_readonly("volume", &Particle::volume)
-        .def_readonly("material", &Particle::material);
+        .def_readwrite("x", &Particle::x)
+        .def_readwrite("y", &Particle::y)
+        .def_readwrite("z", &Particle::z)
+        .def_readwrite("vx", &Particle::vx)
+        .def_readwrite("vy", &Particle::vy)
+        .def_readwrite("vz", &Particle::vz)
+        .def_readwrite("mass", &Particle::mass)
+        .def_readwrite("emitter_id", &Particle::emitter_id);
 
-    py::class_<MPMSimulation>(m, "MPMSimulation")
-        .def(py::init<const Eigen::Vector3i&, float, float>())
-        .def("add_particle", &MPMSimulation::addParticle)
-        .def("step", &MPMSimulation::step)
-        .def("get_particles", [](const MPMSimulation& sim) {
-        const std::vector<Particle>& particles = sim.getParticles();
-        return py::list(py::cast(particles));
-            });
+    py::class_<MPMSimulation>(m, "Simulation")
+        .def(py::init<int, double>())
+        .def("set_attr", &MPMSimulation::set_attr)
+        .def("add_particles", [](MPMSimulation& self, py::array_t<double> coordinates, int emitter_id) {
+        py::buffer_info buf = coordinates.request();
+        if (buf.ndim != 2 || buf.shape[1] != 3) {
+            throw std::runtime_error("Input must be a Nx3 array");
+        }
+        std::vector<double> coords(buf.size);
+        std::memcpy(coords.data(), buf.ptr, buf.size * sizeof(double));
+        return self.add_particles(coords, emitter_id);
+            })
+        .def("simulate", &MPMSimulation::simulate)
+        .def_property_readonly("particles", [](const MPMSimulation& self) {
+        return py::make_iterator(self.get_particles().begin(), self.get_particles().end());
+            }, py::keep_alive<0, 1>())
+        .def("set_particles_attr", &MPMSimulation::set_particles_attr);
 }

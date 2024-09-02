@@ -1,100 +1,50 @@
-// MPMSimulation.h
 #pragma once
 #include <vector>
-#include <Eigen/Dense>
-#include <Eigen/SVD>
-#include <omp.h>
-
-enum class MaterialType {
-    Elastic,
-    Snow,
-    Fluid
-};
-
-struct Material {
-    MaterialType type;
-    float youngsModulus;
-    float poissonRatio;
-    float criticalCompression;
-    float criticalStretch;
-    float density;
-
-    Material(MaterialType t, float E, float nu, float cComp, float cStretch, float rho)
-        : type(t), youngsModulus(E), poissonRatio(nu),
-        criticalCompression(cComp), criticalStretch(cStretch), density(rho) {}
-};
+#include <array>
+#include <string>
+#include <cmath>
+#include <algorithm>
 
 struct Particle {
-    Eigen::Vector3f position;
-    Eigen::Vector3f velocity;
-    Eigen::Matrix3f deformationGradient;
-    float mass;
-    float volume;
-    const Material* material;
-
-    Particle(const Eigen::Vector3f& pos, float m, const Material* mat)
-        : position(pos), velocity(Eigen::Vector3f::Zero()),
-        deformationGradient(Eigen::Matrix3f::Identity()),
-        mass(m), volume(m / mat->density), material(mat) {}
+    double x, y, z;
+    double vx, vy, vz;
+    double mass;
+    int emitter_id;
 };
 
-class Grid {
-public:
-    Eigen::Vector3i dimensions;
-    float cellSize;
-    std::vector<Eigen::Vector3f> velocities;
-    std::vector<Eigen::Vector3f> forces;
-    std::vector<float> masses;
-
-    Grid(const Eigen::Vector3i& dims, float size)
-        : dimensions(dims), cellSize(size) {
-        int totalCells = dims.x() * dims.y() * dims.z();
-        velocities.resize(totalCells, Eigen::Vector3f::Zero());
-        forces.resize(totalCells, Eigen::Vector3f::Zero());
-        masses.resize(totalCells, 0.0f);
-    }
-
-    void reset() {
-        std::fill(velocities.begin(), velocities.end(), Eigen::Vector3f::Zero());
-        std::fill(forces.begin(), forces.end(), Eigen::Vector3f::Zero());
-        std::fill(masses.begin(), masses.end(), 0.0f);
-    }
-
-    int getIndex(const Eigen::Vector3i& cellPos) const {
-        return cellPos.x() + cellPos.y() * dimensions.x() + cellPos.z() * dimensions.x() * dimensions.y();
-    }
+struct Cell {
+    double mass;
+    double vx, vy, vz;
+    double ax, ay, az;
 };
 
 class MPMSimulation {
+public:
+    MPMSimulation(int grid_size, double dt);
+    void set_attr(const std::string& attribute_name, double attribute_value);
+    int add_particles(const std::vector<double>& coordinates, int emitter_id);
+    void simulate(int frame);
+    const std::vector<Particle>& get_particles() const { return particles; }
+    void set_particles_attr(int particle_start, int particle_count, const std::string& attribute, double value);
+
 private:
     std::vector<Particle> particles;
-    std::vector<Material> materials;
-    Grid grid;
-    float dt;
-    Eigen::Vector3f gravity;
+    std::vector<Cell> grid;
+    int grid_size;
+    double dx;
+    double dt;
+    double gravity;
+    double rest_density;
+    double dynamic_viscosity;
+    double particle_mass;
 
-public:
-    MPMSimulation(const Eigen::Vector3i& gridDimensions, float cellSize, float timeStep)
-        : grid(gridDimensions, cellSize), dt(timeStep), gravity(0, -9.81f, 0) {
-        initializeMaterials();
-    }
+    void initialize_grid();
+    void particle_to_grid();
+    void solve_incompressibility();
+    void apply_forces();
+    void grid_to_particle();
+    void update_particles();
 
-    void addParticle(const Eigen::Vector3f& position, float mass, int materialIndex) {
-        particles.emplace_back(position, mass, &materials[materialIndex]);
-    }
-
-    void step();
-    const std::vector<Particle>& getParticles() const { return particles; }
-
-private:
-    void initializeMaterials() {
-        materials.emplace_back(MaterialType::Elastic, 1e5f, 0.3f, 1e-2f, 1e-3f, 1000.0f);
-        materials.emplace_back(MaterialType::Snow, 1.4e5f, 0.2f, 2.5e-2f, 7.5e-3f, 400.0f);
-        materials.emplace_back(MaterialType::Fluid, 5e4f, 0.4f, 0.0f, 0.0f, 1000.0f);
-    }
-
-    void particlesToGrid();
-    void updateGrid();
-    void gridToParticles();
-    Eigen::Matrix3f computeStress(const Particle& p);
+    std::array<double, 6> get_weight(double x, double y, double z); // Updated return type
+    int get_cell_index(int i, int j, int k) const;
 };

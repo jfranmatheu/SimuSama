@@ -1,200 +1,206 @@
 // MPMSimulation.cpp
 #include "MPMSimulation.h"
-#include <cmath>
-#include <iostream>
+#include <cstring>
 
-void MPMSimulation::step() {
-    grid.reset();
-    particlesToGrid();
-    updateGrid();
-    gridToParticles();
+MPMSimulation::MPMSimulation(int grid_size, double dt)
+    : grid_size(grid_size), dt(dt), gravity(-9.81), rest_density(1000.0), dynamic_viscosity(0.001), particle_mass(1.0) {
+    dx = 1.0 / grid_size;
+    initialize_grid();
 }
 
-void threadSafeVectorAdd(Eigen::Vector3f& target, const Eigen::Vector3f& value) {
-#pragma omp critical
-    {
-        target += value;
+void MPMSimulation::initialize_grid() {
+    grid.resize(grid_size * grid_size * grid_size);
+}
+
+void MPMSimulation::set_attr(const std::string& attribute_name, double attribute_value) {
+    if (attribute_name == "gravity") {
+        gravity = attribute_value;
+    }
+    else if (attribute_name == "rest_density") {
+        rest_density = attribute_value;
+    }
+    else if (attribute_name == "dynamic_viscosity") {
+        dynamic_viscosity = attribute_value;
+    }
+    else if (attribute_name == "particle_mass") {
+        particle_mass = attribute_value;
     }
 }
- 
-void MPMSimulation::particlesToGrid() {
-    if (particles.empty()) {
-        std::cerr << "Warning: No particles in the simulation." << std::endl;
-        return;
+
+int MPMSimulation::add_particles(const std::vector<double>& coordinates, int emitter_id) {
+    int start_index = particles.size();
+    for (size_t i = 0; i < coordinates.size(); i += 3) {
+        particles.push_back({ coordinates[i], coordinates[i + 1], coordinates[i + 2], 0, 0, 0, particle_mass, emitter_id });
+    }
+    return start_index;
+}
+
+void MPMSimulation::simulate(int frame) {
+    for (int step = 0; step < frame; ++step) {
+        initialize_grid();
+        particle_to_grid();
+        solve_incompressibility();
+        apply_forces();
+        grid_to_particle();
+        update_particles();
+    }
+}
+
+void MPMSimulation::set_particles_attr(int particle_start, int particle_count, const std::string& attribute, double value) {
+    int end = std::min(particle_start + particle_count, static_cast<int>(particles.size()));
+    for (int i = particle_start; i < end; ++i) {
+        if (attribute == "mass") {
+            particles[i].mass = value;
+        }
+    }
+}
+
+void MPMSimulation::particle_to_grid() {
+    for (const auto& p : particles) {
+        int i = static_cast<int>(p.x / dx);
+        int j = static_cast<int>(p.y / dx);
+        int k = static_cast<int>(p.z / dx);
+
+        auto weights = get_weight(p.x / dx - i, p.y / dx - j, p.z / dx - k);
+
+        for (int di = 0; di < 2; ++di) {
+            for (int dj = 0; dj < 2; ++dj) {
+                for (int dk = 0; dk < 2; ++dk) {
+                    int index = get_cell_index(i + di, j + dj, k + dk);
+                    double weight = weights[0] * (1 - di) + weights[1] * di *
+                        weights[2] * (1 - dj) + weights[3] * dj *
+                        weights[4] * (1 - dk) + weights[5] * dk;
+
+                    grid[index].mass += weight * p.mass;
+                    grid[index].vx += weight * p.mass * p.vx;
+                    grid[index].vy += weight * p.mass * p.vy;
+                    grid[index].vz += weight * p.mass * p.vz;
+                }
+            }
+        }
     }
 
-#pragma omp parallel for
-    for (int i = 0; i < particles.size(); ++i) {
-        Particle& p = particles[i];
-        Eigen::Vector3f cellPos = p.position / grid.cellSize;
-        Eigen::Vector3i baseCell(cellPos.cast<int>());
+    for (auto& cell : grid) {
+        if (cell.mass > 0) {
+            cell.vx /= cell.mass;
+            cell.vy /= cell.mass;
+            cell.vz /= cell.mass;
+        }
+    }
+}
 
-        // Clamp baseCell to grid boundaries
-        baseCell = baseCell.cwiseMax(Eigen::Vector3i::Zero()).cwiseMin(grid.dimensions - Eigen::Vector3i::Ones());
+void MPMSimulation::solve_incompressibility() {
+    // Simple pressure solver (Jacobi iteration)
+    std::vector<double> pressure(grid.size(), 0.0);
+    const int iterations = 10;
+    const double relaxation = 0.5;
 
-        for (int x = 0; x < 2; ++x) {
-            for (int y = 0; y < 2; ++y) {
-                for (int z = 0; z < 2; ++z) {
-                    Eigen::Vector3i cell = baseCell + Eigen::Vector3i(x, y, z);
+    for (int iter = 0; iter < iterations; ++iter) {
+        for (int i = 1; i < grid_size - 1; ++i) {
+            for (int j = 1; j < grid_size - 1; ++j) {
+                for (int k = 1; k < grid_size - 1; ++k) {
+                    int index = get_cell_index(i, j, k);
+                    if (grid[index].mass > 0) {
+                        double div = (grid[get_cell_index(i + 1, j, k)].vx - grid[get_cell_index(i - 1, j, k)].vx) / (2 * dx) +
+                            (grid[get_cell_index(i, j + 1, k)].vy - grid[get_cell_index(i, j - 1, k)].vy) / (2 * dx) +
+                            (grid[get_cell_index(i, j, k + 1)].vz - grid[get_cell_index(i, j, k - 1)].vz) / (2 * dx);
 
-                    // Ensure cell is within grid boundaries
-                    if ((cell.array() < 0).any() || (cell.array() >= grid.dimensions.array()).any()) {
-                        continue;
-                    }
-
-                    Eigen::Vector3f cellDist = (cellPos - cell.cast<float>()).cwiseAbs();
-                    float w = (1 - cellDist.x()) * (1 - cellDist.y()) * (1 - cellDist.z());
-
-                    int index = grid.getIndex(cell);
-
-#pragma omp atomic
-                    grid.masses[index] += w * p.mass;
-
-#pragma omp critical
-                    {
-                        grid.velocities[index] += w * p.mass * p.velocity;
+                        pressure[index] = (1 - relaxation) * pressure[index] +
+                            relaxation * (div * rest_density * dx / dt -
+                                (pressure[get_cell_index(i + 1, j, k)] + pressure[get_cell_index(i - 1, j, k)] +
+                                    pressure[get_cell_index(i, j + 1, k)] + pressure[get_cell_index(i, j - 1, k)] +
+                                    pressure[get_cell_index(i, j, k + 1)] + pressure[get_cell_index(i, j, k - 1)]) / 6);
                     }
                 }
             }
         }
     }
 
-#pragma omp parallel for
-    for (int i = 0; i < grid.velocities.size(); ++i) {
-        if (grid.masses[i] > 0) {
-            grid.velocities[i] /= grid.masses[i];
-        }
-    }
-}
+    // Apply pressure forces
+    for (int i = 1; i < grid_size - 1; ++i) {
+        for (int j = 1; j < grid_size - 1; ++j) {
+            for (int k = 1; k < grid_size - 1; ++k) {
+                int index = get_cell_index(i, j, k);
+                if (grid[index].mass > 0) {
+                    double px = (pressure[get_cell_index(i + 1, j, k)] - pressure[get_cell_index(i - 1, j, k)]) / (2 * dx);
+                    double py = (pressure[get_cell_index(i, j + 1, k)] - pressure[get_cell_index(i, j - 1, k)]) / (2 * dx);
+                    double pz = (pressure[get_cell_index(i, j, k + 1)] - pressure[get_cell_index(i, j, k - 1)]) / (2 * dx);
 
-void MPMSimulation::updateGrid() {
-#pragma omp parallel for
-    for (int i = 0; i < grid.velocities.size(); ++i) {
-        if (grid.masses[i] > 0) {
-            grid.velocities[i] += dt * (grid.forces[i] / grid.masses[i] + gravity);
-        }
-    }
-
-    // Simple boundary conditions
-    for (int x = 0; x < grid.dimensions.x(); ++x) {
-        for (int y = 0; y < grid.dimensions.y(); ++y) {
-            for (int z = 0; z < grid.dimensions.z(); ++z) {
-                int index = grid.getIndex(Eigen::Vector3i(x, y, z));
-                if (y == 0) grid.velocities[index].y() = std::max(0.0f, grid.velocities[index].y());
-                if (x == 0 || x == grid.dimensions.x() - 1) grid.velocities[index].x() = 0;
-                if (z == 0 || z == grid.dimensions.z() - 1) grid.velocities[index].z() = 0;
-            }
-        }
-    }
-}
-
-void MPMSimulation::gridToParticles() {
-#pragma omp parallel for
-    for (int i = 0; i < particles.size(); ++i) {
-        Particle& p = particles[i];
-        Eigen::Vector3f cellPos = p.position / grid.cellSize;
-        Eigen::Vector3i baseCell(cellPos.cast<int>());
-
-        Eigen::Vector3f velocityUpdate = Eigen::Vector3f::Zero();
-        Eigen::Matrix3f velocityGradient = Eigen::Matrix3f::Zero();
-
-        for (int x = 0; x < 2; ++x) {
-            for (int y = 0; y < 2; ++y) {
-                for (int z = 0; z < 2; ++z) {
-                    Eigen::Vector3i cell = baseCell + Eigen::Vector3i(x, y, z);
-                    Eigen::Vector3f cellDist = (cellPos - cell.cast<float>()).cwiseAbs();
-                    float w = (1 - cellDist.x()) * (1 - cellDist.y()) * (1 - cellDist.z());
-
-                    int index = grid.getIndex(cell);
-                    velocityUpdate += w * grid.velocities[index];
-
-                    Eigen::Vector3f dw = Eigen::Vector3f(
-                        x ? 1 : -1, y ? 1 : -1, z ? 1 : -1
-                    ).cwiseProduct(Eigen::Vector3f(
-                        1 - cellDist.y() * (1 - cellDist.z()),
-                        1 - cellDist.x() * (1 - cellDist.z()),
-                        1 - cellDist.x() * (1 - cellDist.y())
-                    )) / grid.cellSize;
-
-                    velocityGradient += grid.velocities[index] * dw.transpose();
-                }
-            }
-        }
-
-        p.velocity = velocityUpdate;
-        p.position += dt * p.velocity;
-        p.deformationGradient = (Eigen::Matrix3f::Identity() + dt * velocityGradient) * p.deformationGradient;
-
-        Eigen::Matrix3f stress = computeStress(p);
-        Eigen::Matrix3f force = -p.volume * stress * p.deformationGradient.transpose();
-
-        for (int x = 0; x < 2; ++x) {
-            for (int y = 0; y < 2; ++y) {
-                for (int z = 0; z < 2; ++z) {
-                    Eigen::Vector3i cell = baseCell + Eigen::Vector3i(x, y, z);
-                    Eigen::Vector3f cellDist = (cellPos - cell.cast<float>()).cwiseAbs();
-                    float w = (1 - cellDist.x()) * (1 - cellDist.y()) * (1 - cellDist.z());
-
-                    Eigen::Vector3f dw = Eigen::Vector3f(
-                        x ? 1 : -1, y ? 1 : -1, z ? 1 : -1
-                    ).cwiseProduct(Eigen::Vector3f(
-                        1 - cellDist.y() * (1 - cellDist.z()),
-                        1 - cellDist.x() * (1 - cellDist.z()),
-                        1 - cellDist.x() * (1 - cellDist.y())
-                    )) / grid.cellSize;
-
-                    int index = grid.getIndex(cell);
-                    Eigen::Vector3f nodeForce = force * dw;
-                    if (index >= 0 && index < grid.forces.size()) {
-                        threadSafeVectorAdd(grid.forces[index], nodeForce);
-                    } else {
-                        // Log error or handle out-of-bounds access
-                        std::cerr << "Error: Out.of bounds." << std::endl;
-                    }
+                    grid[index].vx -= dt * px / rest_density;
+                    grid[index].vy -= dt * py / rest_density;
+                    grid[index].vz -= dt * pz / rest_density;
                 }
             }
         }
     }
 }
 
-// Helper function for matrix logarithm
-Eigen::Matrix3f matrixLogarithm(const Eigen::Matrix3f& F) {
-    Eigen::JacobiSVD<Eigen::Matrix3f> svd(F, Eigen::ComputeFullU | Eigen::ComputeFullV);
-    Eigen::Vector3f log_s = svd.singularValues().array().log();
-    return svd.matrixU() * log_s.asDiagonal() * svd.matrixV().transpose();
+void MPMSimulation::apply_forces() {
+    for (auto& cell : grid) {
+        if (cell.mass > 0) {
+            cell.vy += gravity * dt;
+        }
+    }
 }
 
-Eigen::Matrix3f MPMSimulation::computeStress(const Particle& p) {
-    Eigen::Matrix3f F = p.deformationGradient;
-    Eigen::Matrix3f strain = 0.5f * (F.transpose() * F - Eigen::Matrix3f::Identity());
-    float J = F.determinant();
+void MPMSimulation::grid_to_particle() {
+    for (auto& p : particles) {
+        int i = static_cast<int>(p.x / dx);
+        int j = static_cast<int>(p.y / dx);
+        int k = static_cast<int>(p.z / dx);
 
-    float lambda = p.material->youngsModulus * p.material->poissonRatio /
-        ((1 + p.material->poissonRatio) * (1 - 2 * p.material->poissonRatio));
-    float mu = p.material->youngsModulus / (2 * (1 + p.material->poissonRatio));
+        auto weights = get_weight(p.x / dx - i, p.y / dx - j, p.z / dx - k);
 
-    switch (p.material->type) {
-    case MaterialType::Elastic:
-        return 2.0f * mu * strain + lambda * strain.trace() * Eigen::Matrix3f::Identity();
+        double pic_vx = 0, pic_vy = 0, pic_vz = 0;
+        double flip_vx = p.vx, flip_vy = p.vy, flip_vz = p.vz;
 
-    case MaterialType::Snow: {
-        float Je = std::max(J, 0.1f);
-        Eigen::Matrix3f Fe = std::pow(Je, -1.0f / 3.0f) * F;
-        Eigen::Matrix3f logFe = matrixLogarithm(Fe);
-        Eigen::Matrix3f strainE = 0.5f * (logFe + logFe.transpose());
+        for (int di = 0; di < 2; ++di) {
+            for (int dj = 0; dj < 2; ++dj) {
+                for (int dk = 0; dk < 2; ++dk) {
+                    int index = get_cell_index(i + di, j + dj, k + dk);
+                    double weight = weights[0] * (1 - di) + weights[1] * di *
+                        weights[2] * (1 - dj) + weights[3] * dj *
+                        weights[4] * (1 - dk) + weights[5] * dk;
 
-        float mu_c = mu * std::exp(p.material->criticalCompression * (1.0f - Je));
-        float lambda_c = lambda * std::exp(p.material->criticalCompression * (1.0f - Je));
+                    pic_vx += weight * grid[index].vx;
+                    pic_vy += weight * grid[index].vy;
+                    pic_vz += weight * grid[index].vz;
 
-        return 2.0f * mu_c * strainE + lambda_c * strainE.trace() * Eigen::Matrix3f::Identity();
+                    flip_vx += weight * (grid[index].vx - grid[index].vx);
+                    flip_vy += weight * (grid[index].vy - grid[index].vy);
+                    flip_vz += weight * (grid[index].vz - grid[index].vz);
+                }
+            }
+        }
+
+        const double alpha = 0.95; // FLIP/PIC blending factor
+        p.vx = alpha * flip_vx + (1 - alpha) * pic_vx;
+        p.vy = alpha * flip_vy + (1 - alpha) * pic_vy;
+        p.vz = alpha * flip_vz + (1 - alpha) * pic_vz;
     }
+}
 
-    case MaterialType::Fluid: {
-        float pressure = -lambda * (J - 1);
-        return pressure * Eigen::Matrix3f::Identity();
-    }
+void MPMSimulation::update_particles() {
+    for (auto& p : particles) {
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.z += p.vz * dt;
 
-    default:
-        return Eigen::Matrix3f::Zero();
+        // Simple boundary conditions
+        if (p.x < 0 || p.x > 1) p.vx *= -0.5;
+        if (p.y < 0 || p.y > 1) p.vy *= -0.5;
+        if (p.z < 0 || p.z > 1) p.vz *= -0.5;
+
+        p.x = std::max(0.0, std::min(1.0, p.x));
+        p.y = std::max(0.0, std::min(1.0, p.y));
+        p.z = std::max(0.0, std::min(1.0, p.z));
     }
+}
+
+int MPMSimulation::get_cell_index(int i, int j, int k) const {
+    return i + j * grid_size + k * grid_size * grid_size;
+}
+
+std::array<double, 6> MPMSimulation::get_weight(double x, double y, double z) {
+    return { 1 - x, x, 1 - y, y, 1 - z, z };
 }

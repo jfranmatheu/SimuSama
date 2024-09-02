@@ -1,38 +1,130 @@
 import bpy
-import bmesh
+import gpu
+from gpu_extras.batch import batch_for_shader
 import numpy as np
 from . import mpm_simulation
 
 bl_info = {
     "name": "MPM Simulation",
     "author": "Your Name",
-    "version": (1, 3),
-    "blender": (2, 80, 0),
+    "version": (1, 4),
+    "blender": (3, 0, 0),
     "location": "View3D > Sidebar > MPM Simulation",
     "description": "Run MPM simulations in Blender with multiple materials",
     "category": "Animation",
 }
 
+vertex_shader = '''
+    uniform mat4 viewProjectionMatrix;
 
-sim = None
- 
-class MPMSimulationProperties(bpy.types.PropertyGroup):
-    grid_size_x: bpy.props.IntProperty(name="Grid Size X", default=50, min=10, max=200)
-    grid_size_y: bpy.props.IntProperty(name="Grid Size Y", default=50, min=10, max=200)
-    grid_size_z: bpy.props.IntProperty(name="Grid Size Z", default=50, min=10, max=200)
-    cell_size: bpy.props.FloatProperty(name="Cell Size", default=0.1, min=0.01, max=1.0)
-    time_step: bpy.props.FloatProperty(name="Time Step", default=0.01, min=0.001, max=0.1)
-    num_steps: bpy.props.IntProperty(name="Number of Steps", default=100, min=1, max=1000)
-    particle_scale: bpy.props.FloatProperty(name="Particle Scale", default=0.05, min=0.01, max=1.0)
-    material_type: bpy.props.EnumProperty(
-        name="Material Type",
-        items=[
-            ('0', "Elastic", "Elastic material"),
-            ('1', "Snow", "Snow material"),
-            ('2', "Fluid", "Fluid material"),
-        ],
-        default='0'
-    )
+    in vec3 position;
+
+    void main()
+    {
+        gl_Position = viewProjectionMatrix * vec4(position, 1.0);
+    }
+'''
+
+fragment_shader = '''
+    uniform vec4 color;
+
+    out vec4 fragColor;
+
+    void main()
+    {
+        fragColor = color;
+    }
+'''
+
+class MPMSimulationOperator(bpy.types.Operator):
+    bl_idname = "object.mpm_simulation"
+    bl_label = "Run MPM Simulation"
+
+    _timer = None
+    _draw_handle = None
+    simulation = None
+    particles = None
+    current_frame = 0
+    shader = None
+    batch = None
+
+    def execute(self, context):
+        if context.area.type != 'VIEW_3D':
+            self.report({'WARNING'}, "View3D not found, cannot run operator")
+            return {'CANCELLED'}
+
+        # Initialize simulation
+        grid_size = 100
+        dt = context.scene.render.fps_base / context.scene.render.fps
+        self.simulation = mpm_simulation.Simulation(grid_size, dt)
+
+        # Set simulation attributes
+        self.simulation.set_attr("gravity", -9.81)
+        self.simulation.set_attr("rest_density", 1000.0)
+        self.simulation.set_attr("dynamic_viscosity", 0.001)
+        self.simulation.set_attr("particle_mass", 0.1)
+
+        # Add particles
+        num_particles = 1000
+        particles = np.random.rand(num_particles, 3) * 0.5
+        self.simulation.add_particles(particles.astype(np.float64), 0)
+
+        # Initialize shader
+        self.shader = gpu.types.GPUShader(vertex_shader, fragment_shader)
+
+        # Set up modal
+        context.window_manager.modal_handler_add(self)
+        self._timer = context.window_manager.event_timer_add(dt, window=context.window)
+
+        # Set up draw handler
+        self._draw_handle = bpy.types.SpaceView3D.draw_handler_add(
+            self.draw_sim, (context,), 'WINDOW', 'POST_VIEW'
+        )
+
+        self.current_frame = context.scene.frame_start
+
+        return {'RUNNING_MODAL'}
+
+    def modal(self, context, event):
+        if event.type == 'ESC':
+            self.cancel(context)
+            return {'CANCELLED'}
+
+        if event.type == 'TIMER':
+            self.simulation.simulate(1)
+            self.current_frame += 1
+            context.area.tag_redraw()
+
+            print("PROCESS FRAME %i" % self.current_frame)
+
+            if self.current_frame > context.scene.frame_end:
+                self.cancel(context)
+                return {'FINISHED'}
+
+        return {'PASS_THROUGH'}
+
+    def cancel(self, context):
+        bpy.types.SpaceView3D.draw_handler_remove(self._draw_handle, 'WINDOW')
+        context.window_manager.event_timer_remove(self._timer)
+
+    def draw_sim(self, context):
+        particles = list(self.simulation.particles)
+        if particles:
+            coords = [(p.x, p.y, p.z) for p in particles]
+            self.batch = batch_for_shader(self.shader, 'POINTS', {"position": coords})
+
+            self.shader.bind()
+
+            matrix = context.region_data.perspective_matrix
+            self.shader.uniform_float("viewProjectionMatrix", matrix)
+            self.shader.uniform_float("color", (1, 0, 0, 1))  # Red color for particles
+
+            gpu.state.point_size_set(5)  # Set point size
+            gpu.state.blend_set('ALPHA')  # Enable alpha blending
+
+            self.batch.draw(self.shader)
+
+            gpu.state.blend_set('NONE')  # Disable alpha blending after drawing
 
 class MPMSimulationPanel(bpy.types.Panel):
     bl_label = "MPM Simulation"
@@ -43,122 +135,15 @@ class MPMSimulationPanel(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        scene = context.scene
-        mpm_props = scene.mpm_properties
-
-        layout.prop(mpm_props, "grid_size_x")
-        layout.prop(mpm_props, "grid_size_y")
-        layout.prop(mpm_props, "grid_size_z")
-        layout.prop(mpm_props, "cell_size")
-        layout.prop(mpm_props, "time_step")
-        layout.prop(mpm_props, "num_steps")
-        layout.prop(mpm_props, "particle_scale")
-        layout.prop(mpm_props, "material_type")
-        layout.operator("object.run_mpm_simulation")
-
-class RunMPMSimulation(bpy.types.Operator):
-    bl_idname = "object.run_mpm_simulation"
-    bl_label = "Run MPM Simulation"
-
-    def execute(self, context):
-        scene = context.scene
-        mpm_props = scene.mpm_properties
-
-        # Create MPM simulation
-        global sim
-        grid_dimensions = np.array([mpm_props.grid_size_x, mpm_props.grid_size_y, mpm_props.grid_size_z])
-        sim = mpm_simulation.MPMSimulation(grid_dimensions, mpm_props.cell_size, mpm_props.time_step)
-
-        # Add particles from selected object
-        obj = context.active_object
-        if obj and obj.type == 'MESH':
-            bm = bmesh.new()
-            bm.from_mesh(obj.data)
-            bmesh.ops.triangulate(bm, faces=bm.faces)
-
-            material_index = int(mpm_props.material_type)
-            for v in bm.verts:
-                world_pos = obj.matrix_world @ v.co
-                sim.add_particle(np.array(world_pos), 1.0, material_index)
-
-            bm.free()
-        else:
-            self.report({'ERROR'}, "Please select a mesh object")
-            return {'CANCELLED'}
-
-        # Create result mesh
-        mesh = bpy.data.meshes.new(name="MPM_Result")
-        result_obj = bpy.data.objects.new("MPM_Result", mesh)
-        bpy.context.scene.collection.objects.link(result_obj)
-
-        # Set up frame range
-        scene.frame_start = 0
-        scene.frame_end = mpm_props.num_steps - 1
-
-        # Add frame_post handler
-        bpy.app.handlers.frame_change_post.append(update_mpm_simulation)
-        bpy.ops.screen.animation_play('INVOKE_DEFAULT')
-
-        # particle_count = sim.get_particle_count()
-        # self.report({'INFO'}, f"MPM Simulation setup complete with {particle_count} particles")
-        return {'FINISHED'}
-
-def update_mpm_simulation(scene):
-    print(f"MPM Simulating frame {scene.frame_current}")
-
-    global sim
-    result_obj = bpy.data.objects["MPM_Result"]
-
-    try:
-        # Run simulation step
-        sim.step()
-
-        # Update mesh
-        particles = sim.get_particles()
-        
-        if not particles:
-            print("Warning: No particles returned from simulation")
-            return
-
-        mesh = result_obj.data
-        mesh.clear_geometry()
-        mesh.vertices.add(len(particles))
-
-        coords = []
-        for particle in particles:
-            try:
-                coords.extend(particle.position)
-            except AttributeError:
-                print(f"Error: Particle has no position attribute")
-            except Exception as e:
-                print(f"Error accessing particle position: {str(e)}")
-
-        if len(coords) == len(particles) * 3:
-            mesh.vertices.foreach_set("co", coords)
-        else:
-            print(f"Error: Mismatch in coordinate data. Expected {len(particles) * 3}, got {len(coords)}")
-
-        # Update mesh
-        mesh.update()
-        
-        print(f"Updated mesh with {len(particles)} particles")
-    except Exception as e:
-        print(f"Error in MPM simulation update: {str(e)}")
-
-
+        layout.operator("object.mpm_simulation")
 
 def register():
-    bpy.utils.register_class(MPMSimulationProperties)
+    bpy.utils.register_class(MPMSimulationOperator)
     bpy.utils.register_class(MPMSimulationPanel)
-    bpy.utils.register_class(RunMPMSimulation)
-    bpy.types.Scene.mpm_properties = bpy.props.PointerProperty(type=MPMSimulationProperties)
 
 def unregister():
-    bpy.utils.unregister_class(MPMSimulationProperties)
+    bpy.utils.unregister_class(MPMSimulationOperator)
     bpy.utils.unregister_class(MPMSimulationPanel)
-    bpy.utils.unregister_class(RunMPMSimulation)
-    del bpy.types.Scene.mpm_properties
-    bpy.app.handlers.frame_change_post.remove(update_mpm_simulation)
 
 if __name__ == "__main__":
     register()
