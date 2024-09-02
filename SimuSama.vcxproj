@@ -131,11 +131,14 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="eigen_example.cpp" />
-    <ClCompile Include="minimal_example.cpp" />
+    <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="packages.config" />
+    <ClCompile Include="MPMBindings.cpp" />
+    <ClCompile Include="MPMSimulation.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="MPMSimulation.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
