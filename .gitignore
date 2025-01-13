@@ -39,3 +39,6 @@
 /SimuSama
 /__pycache__
 /packages
+*.vcxproj
+*.vcxproj.*
+*.sln
